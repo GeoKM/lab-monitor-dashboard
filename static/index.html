@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lab Monitor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Lab Monitor</h1>
+    <div class="header-controls">
+      <span id="last-updated" class="timestamp"></span>
+      <button id="refresh-btn" onclick="loadHosts()">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="grid" class="host-grid"></div>
+  </main>
+
+  <!-- Drill-down panel -->
+  <div id="detail-panel" class="detail-panel hidden">
+    <div class="detail-header">
+      <h2 id="detail-hostname">—</h2>
+      <button class="close-btn" onclick="closeDetail()">✕</button>
+    </div>
+    <div id="detail-body" class="detail-body"></div>
+  </div>
+
+  <!-- Overlay for detail panel -->
+  <div id="overlay"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
