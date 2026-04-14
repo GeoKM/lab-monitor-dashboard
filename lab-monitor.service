@@ -1,0 +1,16 @@
+[Unit]
+Description=Lab Monitor Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=keith
+WorkingDirectory=/home/keith/Projects/lab-monitor-dashboard
+ExecStart=/home/keith/Projects/lab-monitor-dashboard/.venv/bin/python3 /home/keith/Projects/lab-monitor-dashboard/server.py
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
