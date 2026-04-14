@@ -29,6 +29,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def latest_snapshot(hostname: str) -> Optional[dict]:
