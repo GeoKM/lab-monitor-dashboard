@@ -67,6 +67,8 @@ def read_alerts(hostname: str) -> list[dict]:
 
 def host_status(snapshot: Optional[dict], alerts: list[dict]) -> str:
     """Determine host status: green, orange, or red."""
+    if snapshot and snapshot.get("unavailable"):
+        return "unavailable"
     if any(a["level"] == "CRITICAL" for a in alerts):
         return "red"
     if alerts:
@@ -127,6 +129,9 @@ def list_hosts():
         if snapshot:
             entry.update({
                 "timestamp": snapshot.get("timestamp"),
+                "unavailable": snapshot.get("unavailable", False),
+                "last_known_status": snapshot.get("last_known_status"),
+                "error": snapshot.get("error"),
                 "kernel": snapshot.get("kernel"),
                 "uptime_seconds": snapshot.get("uptime_seconds"),
                 "load_1m": snapshot.get("load", {}).get("1m"),

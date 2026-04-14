@@ -51,13 +51,15 @@ function renderGrid(data) {
     const cpuIdle = h.cpu_idle != null ? `${h.cpu_idle}%` : null;
     const load1m = h.load_1m != null ? h.load_1m.toFixed(2) : null;
 
+    const statusLabel = h.status === 'unavailable' ? 'scan unavailable' : h.status;
     card.innerHTML = `
       <div class="card-name">${h.hostname}</div>
-      <div class="card-status">${h.status}</div>
+      <div class="card-status">${statusLabel}</div>
       <div class="card-meta">
-        ${cpuIdle ? `<span>CPU idle: ${cpuIdle}</span>` : ''}
-        ${load1m ? `<span>Load 1m: ${load1m}</span>` : ''}
-        ${memAvail && memTotal ? `<span>RAM: ${memAvail} / ${memTotal}</span>` : ''}
+        ${h.unavailable ? `<span style="color:var(--text-muted)">Last known: ${h.last_known_status || 'unknown'}</span>` : ''}
+        ${!h.unavailable && cpuIdle ? `<span>CPU idle: ${cpuIdle}</span>` : ''}
+        ${!h.unavailable && load1m ? `<span>Load 1m: ${load1m}</span>` : ''}
+        ${!h.unavailable && memAvail && memTotal ? `<span>RAM: ${memAvail} / ${memTotal}</span>` : ''}
         ${uptime ? `<span>Uptime: ${uptime}</span>` : ''}
         ${h.alerts?.length ? `<span style="color:var(--orange)">${h.alerts.length} alert${h.alerts.length > 1 ? 's' : ''}</span>` : ''}
       </div>`;
