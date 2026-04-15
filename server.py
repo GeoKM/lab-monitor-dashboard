@@ -33,17 +33,36 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def latest_snapshot(hostname: str) -> Optional[dict]:
-    """Return the most recent snapshot JSON for a given hostname."""
+def snapshot_files(hostname: str) -> list[str]:
     pattern = SNAPSHOT_ROOT / hostname / f"{hostname}-*.json"
-    files = sorted(glob.glob(str(pattern)), reverse=True)
-    if not files:
-        return None
+    files = glob.glob(str(pattern))
+    return sorted(files, key=lambda p: Path(p).stat().st_mtime, reverse=True)
+
+
+def load_snapshot(path: str) -> Optional[dict]:
     try:
-        with open(files[0]) as f:
+        with open(path) as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def latest_snapshot(hostname: str) -> Optional[dict]:
+    """Return the most recent snapshot JSON for a given hostname."""
+    for path in snapshot_files(hostname):
+        snap = load_snapshot(path)
+        if snap is not None:
+            return snap
+    return None
+
+
+def latest_successful_snapshot(hostname: str) -> Optional[dict]:
+    """Return the most recent non-unavailable snapshot for a given hostname."""
+    for path in snapshot_files(hostname):
+        snap = load_snapshot(path)
+        if snap and not snap.get("unavailable"):
+            return snap
+    return None
 
 
 def read_alerts(hostname: str) -> list[dict]:
@@ -67,8 +86,9 @@ def read_alerts(hostname: str) -> list[dict]:
 
 def host_status(snapshot: Optional[dict], alerts: list[dict]) -> str:
     """Determine host status: green, orange, or red."""
-    if snapshot and snapshot.get("unavailable"):
-        return "unavailable"
+    if snapshot and snapshot.get("_summary_severity"):
+        sev = str(snapshot.get("_summary_severity", "OK")).upper()
+        return {"CRITICAL": "red", "WARNING": "orange", "OK": "green"}.get(sev, "green")
     if any(a["level"] == "CRITICAL" for a in alerts):
         return "red"
     if alerts:
@@ -117,28 +137,35 @@ def list_hosts():
 
     result = []
     for hostname in hostnames:
-        snapshot = latest_snapshot(hostname)
+        latest = latest_snapshot(hostname)
+        display_snapshot = latest_successful_snapshot(hostname) if latest and latest.get("unavailable") else latest
         alerts = read_alerts(hostname)
-        status = host_status(snapshot, alerts)
+        if display_snapshot and display_snapshot.get("_alerts"):
+            alerts = [
+                {"level": "CRITICAL" if a.get("severity") == "critical" else "ALERT", "message": f"[{a.get('severity','').upper()}] {a.get('metric')} = {a.get('value')}"}
+                for a in display_snapshot.get("_alerts", [])
+            ]
+        status = host_status(display_snapshot, alerts)
 
         entry = {
             "hostname": hostname,
             "status": status,
             "alerts": alerts,
+            "unavailable": bool(latest and latest.get("unavailable")),
+            "unavailable_checked_at": latest.get("unavailable_checked_at") if latest else None,
+            "error": latest.get("error") if latest else None,
+            "last_known_status": latest.get("last_known_status") if latest else None,
         }
-        if snapshot:
+        if display_snapshot:
             entry.update({
-                "timestamp": snapshot.get("timestamp"),
-                "unavailable": snapshot.get("unavailable", False),
-                "last_known_status": snapshot.get("last_known_status"),
-                "error": snapshot.get("error"),
-                "kernel": snapshot.get("kernel"),
-                "uptime_seconds": snapshot.get("uptime_seconds"),
-                "load_1m": snapshot.get("load", {}).get("1m"),
-                "cpu_idle": snapshot.get("cpu", {}).get("idle_pct"),
-                "mem_available": snapshot.get("memory", {}).get("available"),
-                "mem_total": snapshot.get("memory", {}).get("total"),
-                "disk_count": len(snapshot.get("disk", [])),
+                "timestamp": display_snapshot.get("timestamp"),
+                "kernel": display_snapshot.get("kernel"),
+                "uptime_seconds": display_snapshot.get("uptime_seconds"),
+                "load_1m": display_snapshot.get("load", {}).get("1m"),
+                "cpu_idle": display_snapshot.get("cpu", {}).get("idle_pct"),
+                "mem_available": display_snapshot.get("memory", {}).get("available"),
+                "mem_total": display_snapshot.get("memory", {}).get("total"),
+                "disk_count": len(display_snapshot.get("disk", [])),
             })
         result.append(entry)
 
@@ -148,11 +175,17 @@ def list_hosts():
 @app.get("/api/hosts/{hostname}")
 def host_detail(hostname: str):
     """Return full snapshot and alert data for a specific host."""
-    snapshot = latest_snapshot(hostname)
-    if not snapshot:
+    latest = latest_snapshot(hostname)
+    if not latest:
         raise HTTPException(status_code=404, detail=f"No snapshot found for {hostname}")
 
+    snapshot = latest_successful_snapshot(hostname) if latest.get("unavailable") else latest
     alerts = read_alerts(hostname)
+    if snapshot and snapshot.get("_alerts"):
+        alerts = [
+            {"level": "CRITICAL" if a.get("severity") == "critical" else "ALERT", "message": f"[{a.get('severity','').upper()}] {a.get('metric')} = {a.get('value')}"}
+            for a in snapshot.get("_alerts", [])
+        ]
     status = host_status(snapshot, alerts)
 
     return {
@@ -160,6 +193,10 @@ def host_detail(hostname: str):
         "status": status,
         "alerts": alerts,
         "snapshot": snapshot,
+        "unavailable": bool(latest.get("unavailable")),
+        "unavailable_checked_at": latest.get("unavailable_checked_at"),
+        "error": latest.get("error"),
+        "last_known_status": latest.get("last_known_status"),
     }
 
 

@@ -51,15 +51,16 @@ function renderGrid(data) {
     const cpuIdle = h.cpu_idle != null ? `${h.cpu_idle}%` : null;
     const load1m = h.load_1m != null ? h.load_1m.toFixed(2) : null;
 
-    const statusLabel = h.status === 'unavailable' ? 'scan unavailable' : h.status;
+    const statusLabel = h.status;
     card.innerHTML = `
       <div class="card-name">${h.hostname}</div>
       <div class="card-status">${statusLabel}</div>
       <div class="card-meta">
-        ${h.unavailable ? `<span style="color:var(--text-muted)">Last known: ${h.last_known_status || 'unknown'}</span>` : ''}
-        ${!h.unavailable && cpuIdle ? `<span>CPU idle: ${cpuIdle}</span>` : ''}
-        ${!h.unavailable && load1m ? `<span>Load 1m: ${load1m}</span>` : ''}
-        ${!h.unavailable && memAvail && memTotal ? `<span>RAM: ${memAvail} / ${memTotal}</span>` : ''}
+        ${h.unavailable ? `<span style="color:var(--text-muted)">Last scan unavailable</span>` : ''}
+        ${h.unavailable && h.unavailable_checked_at ? `<span style="color:var(--text-muted)">Checked: ${formatDateTime(h.unavailable_checked_at)}</span>` : ''}
+        ${cpuIdle ? `<span>CPU idle: ${cpuIdle}</span>` : ''}
+        ${load1m ? `<span>Load 1m: ${load1m}</span>` : ''}
+        ${memAvail && memTotal ? `<span>RAM: ${memAvail} / ${memTotal}</span>` : ''}
         ${uptime ? `<span>Uptime: ${uptime}</span>` : ''}
         ${h.alerts?.length ? `<span style="color:var(--orange)">${h.alerts.length} alert${h.alerts.length > 1 ? 's' : ''}</span>` : ''}
       </div>`;
@@ -98,7 +99,10 @@ function renderDetail(data) {
         <span class="label">Current</span>
         <span class="value" style="color:var(--${data.status})">${data.status.toUpperCase()}</span>
       </div>
-      ${snap?.timestamp ? `<div class="metric-row"><span class="label">Snapshot</span><span class="value">${new Date(snap.timestamp).toLocaleString()}</span></div>` : ''}
+      ${data.unavailable ? `<div class="metric-row"><span class="label">Last scan</span><span class="value" style="color:var(--text-muted)">Unavailable</span></div>` : ''}
+      ${data.unavailable_checked_at ? `<div class="metric-row"><span class="label">Unavailable at</span><span class="value">${formatDateTime(data.unavailable_checked_at)}</span></div>` : ''}
+      ${data.error ? `<div class="metric-row"><span class="label">Reason</span><span class="value">${escapeHtml(data.error)}</span></div>` : ''}
+      ${snap?.timestamp ? `<div class="metric-row"><span class="label">Last successful snapshot</span><span class="value">${formatDateTime(snap.timestamp)}</span></div>` : ''}
       ${snap?.kernel ? `<div class="metric-row"><span class="label">Kernel</span><span class="value">${snap.kernel}</span></div>` : ''}
       ${snap?.uptime_seconds ? `<div class="metric-row"><span class="label">Uptime</span><span class="value">${formatUptime(snap.uptime_seconds)}</span></div>` : ''}
     </section>
@@ -273,6 +277,16 @@ function formatUptime(s) {
   const h = Math.floor((s % 86400) / 3600);
   const m = Math.floor((s % 3600) / 60);
   return [d ? `${d}d` : '', h ? `${h}h` : '', m ? `${m}m` : ''].filter(Boolean).join(' ') || '<1m';
+}
+
+function formatDateTime(value) {
+  if (!value) return '—';
+  let s = String(value);
+  if (/^\d{4}-\d{2}-\d{2}T\d{6}Z$/.test(s)) {
+    s = `${s.slice(0, 13)}:${s.slice(13, 15)}:${s.slice(15, 17)}Z`;
+  }
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? s : d.toLocaleString();
 }
 
 function escapeHtml(s) {
