@@ -17,8 +17,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Paths
 SNAPSHOT_ROOT = Path.home() / "lab-docs" / "monitoring" / "snapshots"
+SNAPSHOT_ROOT_AIX = Path.home() / "lab-docs" / "monitoring" / "snapshots-aix"
 ALERT_ROOT = Path.home() / "lab-docs" / "monitoring" / "alerts"
 STATIC_DIR = Path(__file__).parent / "static"
+HOSTS_FILE = Path.home() / "lab-docs" / "monitoring" / "hosts.d" / "hosts.yaml"
+HOSTS_FILE_AIX = Path.home() / "lab-docs" / "monitoring" / "aix-hosts.d" / "hosts.yaml"
 
 app = FastAPI(title="Lab Monitor Dashboard")
 
@@ -33,8 +36,8 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def snapshot_files(hostname: str) -> list[str]:
-    pattern = SNAPSHOT_ROOT / hostname / f"{hostname}-*.json"
+def snapshot_files(hostname: str, root: Path = SNAPSHOT_ROOT) -> list[str]:
+    pattern = root / hostname / f"{hostname}-*.json"
     files = glob.glob(str(pattern))
     return sorted(files, key=lambda p: Path(p).stat().st_mtime, reverse=True)
 
@@ -47,18 +50,18 @@ def load_snapshot(path: str) -> Optional[dict]:
         return None
 
 
-def latest_snapshot(hostname: str) -> Optional[dict]:
+def latest_snapshot(hostname: str, root: Path = SNAPSHOT_ROOT) -> Optional[dict]:
     """Return the most recent snapshot JSON for a given hostname."""
-    for path in snapshot_files(hostname):
+    for path in snapshot_files(hostname, root):
         snap = load_snapshot(path)
         if snap is not None:
             return snap
     return None
 
 
-def latest_successful_snapshot(hostname: str) -> Optional[dict]:
+def latest_successful_snapshot(hostname: str, root: Path = SNAPSHOT_ROOT) -> Optional[dict]:
     """Return the most recent non-unavailable snapshot for a given hostname."""
-    for path in snapshot_files(hostname):
+    for path in snapshot_files(hostname, root):
         snap = load_snapshot(path)
         if snap and not snap.get("unavailable"):
             return snap
@@ -126,23 +129,37 @@ def uptime_str(seconds: int) -> str:
 def list_hosts():
     """
     Returns summary of all known hosts with their latest snapshot and alert status.
+    Includes both Linux and AIX hosts.
     """
-    hosts_file = Path.home() / "lab-docs" / "monitoring" / "hosts.d" / "hosts.yaml"
     hostnames = []
-    if hosts_file.exists():
+
+    if HOSTS_FILE.exists():
         import yaml
-        with open(hosts_file) as f:
+        with open(HOSTS_FILE) as f:
             data = yaml.safe_load(f)
-            hostnames = [h["name"] for h in data.get("hosts", [])]
+            hostnames += [h["name"] for h in data.get("hosts", [])]
+
+    if HOSTS_FILE_AIX.exists():
+        import yaml
+        with open(HOSTS_FILE_AIX) as f:
+            data = yaml.safe_load(f)
+            hostnames += [h["name"] for h in data.get("hosts", [])]
 
     result = []
     for hostname in hostnames:
-        latest = latest_snapshot(hostname)
-        display_snapshot = latest_successful_snapshot(hostname) if latest and latest.get("unavailable") else latest
+        # Try Linux snapshot root first, then AIX
+        latest = latest_snapshot(hostname, SNAPSHOT_ROOT)
+        snap_root = SNAPSHOT_ROOT
+        if not latest:
+            latest = latest_snapshot(hostname, SNAPSHOT_ROOT_AIX)
+            snap_root = SNAPSHOT_ROOT_AIX
+
+        display_snapshot = latest_successful_snapshot(hostname, snap_root) if latest and latest.get("unavailable") else latest
         alerts = read_alerts(hostname)
         if display_snapshot and display_snapshot.get("_alerts"):
             alerts = [
-                {"level": "CRITICAL" if a.get("severity") == "critical" else "ALERT", "message": f"[{a.get('severity','').upper()}] {a.get('metric')} = {a.get('value')}"}
+                {"level": "CRITICAL" if a.get("severity") == "critical" else "ALERT",
+                 "message": f"[{a.get('severity','').upper()}] {a.get('metric')} = {a.get('value')}"}
                 for a in display_snapshot.get("_alerts", [])
             ]
         status = host_status(display_snapshot, alerts)
@@ -160,14 +177,22 @@ def list_hosts():
             entry.update({
                 "timestamp": display_snapshot.get("timestamp"),
                 "kernel": display_snapshot.get("kernel"),
-                "uptime_seconds": display_snapshot.get("uptime_seconds"),
+                "uptime_seconds": display_snapshot.get("uptime_s") or display_snapshot.get("uptime_seconds"),
                 "load_1m": display_snapshot.get("load", {}).get("1m"),
                 "cpu_idle": display_snapshot.get("cpu", {}).get("idle_pct"),
-                "mem_available": display_snapshot.get("memory", {}).get("available"),
-                "mem_total": display_snapshot.get("memory", {}).get("total"),
-                "disk_count": len(display_snapshot.get("disk", [])),
+                "mem_total": display_snapshot.get("memory", {}).get("total_kb", 0) * 1024 or display_snapshot.get("memory", {}).get("total"),
+                "mem_available": display_snapshot.get("memory", {}).get("free_kb", 0) * 1024 or display_snapshot.get("memory", {}).get("available"),
+                "disk_count": len(display_snapshot.get("disk", [])) or len(display_snapshot.get("filesystems", [])),
             })
-        result.append(entry)
+            # Normalise memory object keys so memBar() works (expects total/available, gets total_kb/free_kb from AIX)
+            mem = display_snapshot.get("memory", {})
+            if "total" not in mem and "total_kb" in mem:
+                entry["memory"] = {
+                    "total": mem["total_kb"] * 1024,
+                    "available": mem["free_kb"] * 1024,
+                    "used": (mem["total_kb"] - mem["free_kb"]) * 1024 if "used_kb" not in mem else mem["used_kb"] * 1024,
+                }
+            result.append(entry)
 
     return result
 
@@ -175,18 +200,65 @@ def list_hosts():
 @app.get("/api/hosts/{hostname}")
 def host_detail(hostname: str):
     """Return full snapshot and alert data for a specific host."""
-    latest = latest_snapshot(hostname)
+    latest = latest_snapshot(hostname, SNAPSHOT_ROOT)
+    snap_root = SNAPSHOT_ROOT
+    if not latest:
+        latest = latest_snapshot(hostname, SNAPSHOT_ROOT_AIX)
+        snap_root = SNAPSHOT_ROOT_AIX
+
     if not latest:
         raise HTTPException(status_code=404, detail=f"No snapshot found for {hostname}")
 
-    snapshot = latest_successful_snapshot(hostname) if latest.get("unavailable") else latest
+    snapshot = latest_successful_snapshot(hostname, snap_root) if latest.get("unavailable") else latest
     alerts = read_alerts(hostname)
     if snapshot and snapshot.get("_alerts"):
         alerts = [
-            {"level": "CRITICAL" if a.get("severity") == "critical" else "ALERT", "message": f"[{a.get('severity','').upper()}] {a.get('metric')} = {a.get('value')}"}
+            {"level": "CRITICAL" if a.get("severity") == "critical" else "ALERT",
+             "message": f"[{a.get('severity','').upper()}] {a.get('metric')} = {a.get('value')}"}
             for a in snapshot.get("_alerts", [])
         ]
     status = host_status(snapshot, alerts)
+
+    # ---- Normalise AIX snapshot fields to match frontend expectations ----
+    # AIX uses `summary_severity`, frontend expects `_summary_severity`
+    if "summary_severity" in snapshot and "_summary_severity" not in snapshot:
+        snapshot["_summary_severity"] = snapshot.pop("summary_severity")
+
+    # Memory: total_kb/free_kb -> total/available in bytes
+    mem = snapshot.get("memory", {})
+    if "total" not in mem and "total_kb" in mem:
+        snapshot["memory"] = {
+            "total": mem["total_kb"] * 1024,
+            "available": mem["free_kb"] * 1024,
+            "used": (mem["total_kb"] - mem["free_kb"]) * 1024,
+        }
+
+    # Swap: compute from paging spaces if not present
+    if "swap" not in snapshot or not snapshot["swap"]:
+        paging = snapshot.get("paging", [])
+        swap_total = 0
+        swap_used = 0
+        for ps in paging:
+            if ps.get("size_mb", 0) > 0:
+                swap_total += ps["size_mb"] * 1024 * 1024
+                swap_used += int(ps["size_mb"] * 1024 * 1024 * ps.get("used_pct", 0) / 100)
+        if "memory" not in snapshot:
+            snapshot["memory"] = {}
+        snapshot["memory"]["swap_total"] = swap_total
+        snapshot["memory"]["swap_used"] = swap_used
+
+    # Filesystems: normalise filesystems -> disk with total/used/avail/use_pct (AIX uses total_kb/used_kb/free_kb/use_pct)
+    if "disk" not in snapshot and "filesystems" in snapshot:
+        snapshot["disk"] = [
+            {
+                "total": fs["total_kb"] * 1024,
+                "used": fs["used_kb"] * 1024,
+                "avail": fs["free_kb"] * 1024,
+                "use_pct": float(fs["use_pct"]),
+                "mount": fs.get("mount", ""),
+            }
+            for fs in snapshot.get("filesystems", [])
+        ]
 
     return {
         "hostname": hostname,
